@@ -3,7 +3,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { createConnection, createServer } from 'node:net';
 import { fileURLToPath } from 'node:url';
-import { resolve } from 'node:path';
+import { basename, resolve } from 'node:path';
 
 const helperPath = fileURLToPath(import.meta.url);
 const states = ['needs input', 'error', 'working', 'retrying', 'idle', 'offline'];
@@ -89,24 +89,28 @@ export function parseSessionRows(text, now = Date.now(), alive = pidAlive) {
           || !Number.isFinite(data.updated) || typeof data.project !== 'string'
           || typeof data.control?.path !== 'string' || typeof data.control?.token !== 'string'
           || !Array.isArray(data.sessions)) continue;
+      const offline = now - data.updated > 20_000 || !alive(data.pid);
+      const common = {
+        session: tmuxSession,
+        window,
+        pane,
+        index,
+        project: sanitize(basename(data.project) || data.project),
+        pid: data.pid,
+        controlPath: data.control.path,
+        controlToken: data.control.token,
+      };
       for (const s of data.sessions) {
         if (typeof s.id !== 'string' || typeof s.title !== 'string' || !states.includes(s.state)) continue;
         const key = `${pane}\0${s.id}`;
         if (seen.has(key)) continue;
         seen.add(key);
         rows.push({
-          session: tmuxSession,
-          window,
-          pane,
-          index,
-          project: sanitize(data.project),
-          pid: data.pid,
+          ...common,
           sessionID: s.id,
           title: sanitize(s.title),
-          state: now - data.updated > 20_000 || !alive(data.pid) ? 'offline' : s.state,
+          state: offline ? 'offline' : s.state,
           updated: s.updated,
-          controlPath: data.control.path,
-          controlToken: data.control.token,
         });
       }
     } catch { continue; }
@@ -116,7 +120,7 @@ export function parseSessionRows(text, now = Date.now(), alive = pidAlive) {
 
 export function sessionListText(rows, includeHeader = false) {
   const sorted = rows.toSorted((a, b) => states.indexOf(a.state) - states.indexOf(b.state));
-  const headings = ['STATE', 'SESSION', 'PROJECT', 'TITLE'];
+  const headings = ['STATE', 'SESSION', 'FOLDER', 'TITLE'];
   const columns = sorted.map(row => [row.state, sanitize(row.sessionID),
     sanitize(row.project), sanitize(row.title)]);
   const widths = headings.map((heading, i) => Math.max(heading.length, ...columns.map(row => row[i].length)));

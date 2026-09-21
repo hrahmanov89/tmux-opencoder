@@ -7,6 +7,24 @@ import { createTracker } from '../lib/status.mjs';
 
 const exec = promisify(execFile);
 
+export function resumedSessionID(args = process.argv) {
+  for (let i = 0; i < args.length; i++) {
+    if ((args[i] === '-s' || args[i] === '--session') && args[i + 1]) return args[i + 1];
+    if (args[i].startsWith('--session=')) return args[i].slice('--session='.length);
+  }
+}
+
+export function visibleSessionID(screen, roots) {
+  const lines = String(screen || '').split('\n');
+  const sidebarStart = Math.floor(Math.max(0, ...lines.map(line => line.length)) / 2);
+  for (const root of roots) {
+    for (const line of lines) {
+      const index = line.lastIndexOf(root.id);
+      if (index >= sidebarStart && !line.slice(index + root.id.length).trim()) return root.id;
+    }
+  }
+}
+
 export async function selectTuiSession(client, directory, sessionID) {
   const result = await client.tui._client.post({
     url: '/tui/select-session',
@@ -17,12 +35,17 @@ export async function selectTuiSession(client, directory, sessionID) {
   if (result.data !== true) throw new Error('OpenCode rejected session selection');
 }
 
-export async function discoverSessions(client, directory) {
-  const [listRes, statusRes] = await Promise.all([
+export async function discoverSessions(client, directory, observed, screen = '') {
+  const [listRes, statusRes, activeRes] = await Promise.all([
     client.session.list({ query: { directory, roots: true, limit: 1000 } }),
     client.session.status({ query: { directory } }),
+    client.session._client.get({ url: '/api/session/active' }),
   ]);
-  return (listRes.data || []).filter(session => !session.parentID).map(session => {
+  for (const id of Object.keys(activeRes.data || {})) observed.add(id);
+  const roots = (listRes.data || []).filter(session => !session.parentID);
+  const visible = visibleSessionID(screen, roots);
+  if (visible) observed.add(visible);
+  return roots.filter(session => observed.has(session.id)).map(session => {
     const status = statusRes.data?.[session.id];
     return {
       id: session.id,
@@ -50,6 +73,8 @@ export default async function tmuxOpencoder({ client, directory }) {
   let lastState;
   let lastStatus;
   let sessions = [];
+  const resumed = resumedSessionID();
+  const observed = new Set(resumed ? [resumed] : []);
 
   await rm(controlPath, { force: true });
   const control = createServer(connection => {
@@ -95,7 +120,8 @@ export default async function tmuxOpencoder({ client, directory }) {
     sessionQueue = sessionQueue.then(async () => {
       if (disposed) return;
       try {
-        sessions = await discoverSessions(client, directory);
+        const screen = await tmux('capture-pane', '-p', '-t', pane);
+        sessions = await discoverSessions(client, directory, observed, screen.stdout);
         const snapshot = JSON.stringify({ version: 1, owner, pid: process.pid,
           updated: Date.now(), project: directory, control: { path: controlPath, token }, sessions });
         await tmux('set-option', '-p', '-t', pane, '@opencode_sessions', snapshot);
@@ -134,8 +160,21 @@ export default async function tmuxOpencoder({ client, directory }) {
   const timer = setInterval(() => { void publish(true); void publishSessions(); }, 5000);
   timer.unref();
   return {
-    async event({ event }) { tracker.event(event); void publish(); void publishSessions(); },
-    async 'chat.message'({ sessionID }) { tracker.prompt(sessionID); void publish(); void publishSessions(); },
+    async event({ event }) {
+      const properties = event.properties || {};
+      const id = properties.sessionID || properties.info?.id;
+      if (event.type === 'session.deleted') observed.delete(id);
+      else if (id && !properties.info?.parentID) observed.add(id);
+      tracker.event(event);
+      void publish();
+      void publishSessions();
+    },
+    async 'chat.message'({ sessionID }) {
+      if (sessionID) observed.add(sessionID);
+      tracker.prompt(sessionID);
+      void publish();
+      void publishSessions();
+    },
     async dispose() {
       disposed = true;
       clearInterval(timer);

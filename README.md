@@ -1,20 +1,22 @@
 # tmux-opencoder
 
-OpenCode status across tmux panes and root sessions, with a searchable fzf switcher.
+Current-process OpenCode root sessions, with statuses and a searchable fzf switcher.
 Works with plain `opencode` started inside each pane; no sessionizer changes.
 
 ## Interface
 
-Press **prefix + O** to open the popup. Every root OpenCode session in each running
-instance is visible and searchable, including idle sessions. Subagent sessions are hidden.
+Press **prefix + O** to open the popup. Root sessions active, resumed, or previously
+observed by each running OpenCode process are visible, including owned idle sessions.
+The current TUI sidebar session is also recognized. Untouched historical sessions and
+subagent sessions are hidden.
 
 ```text
-STATE    SESSION       PROJECT       TITLE
-working  ses_abc123    /repos/api    Add API authentication
-idle     ses_def456    /repos/api    Investigate timeout
+STATE    SESSION       FOLDER  TITLE
+working  ses_abc123    api     Add API authentication
+retrying ses_def456    api     Investigate timeout
 ```
 
-- Search session ID, title, status, or project path.
+- Search session ID, title, status, or final folder name.
 - Enter selects that exact session in its existing OpenCode TUI, then jumps to its pane.
 - Ctrl-R refreshes while preserving the query.
 - Picker has no preview pane and opens without a modal border.
@@ -88,7 +90,7 @@ settings from `FZF_DEFAULT_OPTS`, while explicitly disabling preview and borders
 
 1. Start `opencode` normally inside a tmux pane.
 2. Press tmux prefix plus `O` to open the session picker.
-3. Type to search by status, session ID, title, or project path.
+3. Type to search by status, session ID, title, or final folder name.
 4. Press Enter to select that session in OpenCode and switch to its pane.
 5. Press `Ctrl-R` to refresh results without losing the query.
 6. Press Esc to close the picker.

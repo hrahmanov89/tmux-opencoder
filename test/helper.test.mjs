@@ -16,9 +16,11 @@ const helper = fileURLToPath(new URL('../bin/tmux-opencoder.mjs', import.meta.ur
 const state = (changes = {}) => JSON.stringify({ version: 1, pid: process.pid,
   updated: Date.now(), state: 'working', project: 'demo', ...changes });
 const sessionState = (changes = {}) => JSON.stringify({ version: 1, pid: process.pid,
-  updated: Date.now(), project: '/repos/demo', control: { path: '/tmp/control.sock', token: 'secret' },
+  updated: Date.now(), project: '/repos/demo', state: 'working',
+  control: { path: '/tmp/control.sock', token: 'secret' },
   sessions: [
     { id: 'ses_working', title: 'Working session', state: 'working', updated: Date.now() },
+    { id: 'ses_retry', title: 'Retrying session', state: 'retrying', updated: Date.now() },
     { id: 'ses_idle', title: 'Idle session', state: 'idle', updated: Date.now() },
   ], ...changes });
 
@@ -98,17 +100,20 @@ test('table sorts by urgency without mutating rows; headers align and names are 
   }
 });
 
-test('session rows include working and idle roots once per linked pane', () => {
+test('session rows render working and idle roots once per linked pane', () => {
   const snapshot = sessionState();
   const rows = parseSessionRows(`$0\t@1\t%2\t0.1\t${snapshot}\n$1\t@1\t%2\t2.1\t${snapshot}`, Date.now(), () => true);
-  assert.equal(rows.length, 2);
+  assert.equal(rows.length, 3);
   assert.deepEqual(rows.map(row => [row.sessionID, row.state]), [
-    ['ses_working', 'working'], ['ses_idle', 'idle'],
+    ['ses_working', 'working'], ['ses_retry', 'retrying'], ['ses_idle', 'idle'],
   ]);
   const lines = sessionListText(rows, true).split('\n');
-  assert.match(lines[0].split('\t')[6], /^STATE\s+SESSION\s+PROJECT\s+TITLE$/);
-  assert.match(lines[1], /ses_working/);
-  assert.match(lines[2], /ses_idle/);
+  assert.match(lines[0].split('\t')[6], /^STATE\s+SESSION\s+FOLDER\s+TITLE$/);
+  assert.match(lines[1], /demo/);
+  assert.doesNotMatch(lines[1], /\/repos\/demo/);
+  assert.match(lines[1], /ses_working.*Working session/);
+  assert.match(lines[2], /ses_retry.*Retrying session/);
+  assert.match(lines[3], /ses_idle.*Idle session/);
 });
 
 test('session selection sends exact ID and reports plugin rejection', async () => {
@@ -375,7 +380,7 @@ test('isolated tmux integration', async t => {
       try {
         tmux('resize-window', '-t', pickerPane, '-x', '180', '-y', '30');
         await waitFor(() => screen().includes('needle session'));
-        assert.match(screen(), /STATE +SESSION +PROJECT +TITLE/);
+        assert.match(screen(), /STATE +SESSION +FOLDER +TITLE/);
         tmux('send-keys', '-t', pickerPane, '-l', 'needle');
         tmux('set-option', '-p', '-t', pane, '@opencode_sessions', sessions('idle'));
         tmux('send-keys', '-t', pickerPane, 'C-r');

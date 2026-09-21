@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createTracker } from '../lib/status.mjs';
-import plugin, { discoverSessions, selectTuiSession } from '../plugin/tmux-opencoder.mjs';
+import plugin, { discoverSessions, resumedSessionID, selectTuiSession, visibleSessionID } from '../plugin/tmux-opencoder.mjs';
 
 function send(t, type, sessionID, props = {}) {
   t.event({ type, properties: { sessionID, ...props } });
@@ -60,28 +60,49 @@ test('TUI selection uses exact session through legacy SDK transport', async () =
   client.tui._client.post = async () => ({ data: false });
   await assert.rejects(selectTuiSession(client, '/repos/demo', 'ses_idle'), /rejected/);
 });
-test('session discovery requests all roots and includes idle sessions', async () => {
+test('session discovery keeps active and process-observed idle roots only', async () => {
   const calls = [];
   const client = { session: {
     list: async options => {
       calls.push(['list', options]);
       return { data: [
         { id: 'working', title: 'Working', time: { updated: 2 } },
+        { id: 'retry', title: 'Retry', time: { updated: 2 } },
         { id: 'idle', title: 'Idle', time: { updated: 1 } },
+        { id: 'historical', title: 'Historical', time: { updated: 0 } },
         { id: 'child', parentID: 'working', title: 'Child', time: { updated: 3 } },
       ] };
     },
     status: async options => {
       calls.push(['status', options]);
-      return { data: { working: { type: 'busy' }, idle: { type: 'idle' } } };
+      return { data: { working: { type: 'busy' }, retry: { type: 'retry' }, idle: { type: 'idle' } } };
     },
+    _client: { get: async options => {
+      calls.push(['active', options]);
+      return { data: { working: { type: 'running' }, retry: { type: 'running' } } };
+    } },
   } };
-  assert.deepEqual(await discoverSessions(client, '/repos/demo'), [
+  const observed = new Set();
+  assert.deepEqual(await discoverSessions(client, '/repos/demo', observed, 'content\n        ses_idle\n'), [
     { id: 'working', title: 'Working', state: 'working', updated: 2 },
+    { id: 'retry', title: 'Retry', state: 'retrying', updated: 2 },
     { id: 'idle', title: 'Idle', state: 'idle', updated: 1 },
   ]);
   assert.deepEqual(calls, [
     ['list', { query: { directory: '/repos/demo', roots: true, limit: 1000 } }],
     ['status', { query: { directory: '/repos/demo' } }],
+    ['active', { url: '/api/session/active' }],
   ]);
+  assert.deepEqual([...observed].sort(), ['idle', 'retry', 'working']);
+});
+test('resumed session ID supports short and long CLI forms', () => {
+  assert.equal(resumedSessionID(['opencode', '-s', 'ses_short']), 'ses_short');
+  assert.equal(resumedSessionID(['opencode', '--session', 'ses_long']), 'ses_long');
+  assert.equal(resumedSessionID(['opencode', '--session=ses_equal']), 'ses_equal');
+  assert.equal(resumedSessionID(['opencode']), undefined);
+});
+test('visible session detection accepts only standalone known root IDs', () => {
+  const roots = [{ id: 'ses_current' }, { id: 'ses_other' }];
+  assert.equal(visibleSessionID('text ses_other\n          ses_current\n', roots), 'ses_current');
+  assert.equal(visibleSessionID('ses_unknown\ntext ses_current', roots), undefined);
 });
