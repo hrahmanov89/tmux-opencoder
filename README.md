@@ -1,22 +1,21 @@
 # tmux-opencoder
 
-OpenCode status across tmux panes and sessions, with a searchable fzf switcher.
+OpenCode status across tmux panes and root sessions, with a searchable fzf switcher.
 Works with plain `opencode` started inside each pane; no sessionizer changes.
 
 ## Interface
 
-Press **prefix + O** to open the popup. Session names are visible and searchable,
-so project-folder session names work directly as search terms.
+Press **prefix + O** to open the popup. Every root OpenCode session in each running
+instance is visible and searchable, including idle sessions. Subagent sessions are hidden.
 
 ```text
-STATE        SESSION          WINDOW:PANE       PROJECT
-needs input  api              1.2 editor        /repos/api
-working      web              2.1 opencode      /repos/web
-idle         infra            1.1 opencode      /repos/infra
+STATE    SESSION       PROJECT       TITLE
+working  ses_abc123    /repos/api    Add API authentication
+idle     ses_def456    /repos/api    Investigate timeout
 ```
 
-- Search session name, status, window, or project path.
-- Enter jumps to the selected session/window/pane; Esc closes the popup.
+- Search session ID, title, status, or project path.
+- Enter selects that exact session in its existing OpenCode TUI, then jumps to its pane.
 - Ctrl-R refreshes while preserving the query.
 - Picker has no preview pane and opens without a modal border.
 - Status-right summarizes all instances on that tmux server. Pane-border placement is not changed.
@@ -89,8 +88,8 @@ settings from `FZF_DEFAULT_OPTS`, while explicitly disabling preview and borders
 
 1. Start `opencode` normally inside a tmux pane.
 2. Press tmux prefix plus `O` to open the session picker.
-3. Type to search by status, session, window, or project path.
-4. Press Enter to switch to the selected pane.
+3. Type to search by status, session ID, title, or project path.
+4. Press Enter to select that session in OpenCode and switch to its pane.
 5. Press `Ctrl-R` to refresh results without losing the query.
 6. Press Esc to close the picker.
 
@@ -105,8 +104,10 @@ idle is not proof of successful completion. Errors remain visible until a new pr
 Concurrent sessions and subagents are tracked independently and aggregated per pane.
 Completion of a child cannot mark a busy parent idle.
 
-State lives in pane-local `@opencode_state` JSON and `@opencode_status`, scoped to
-the launching tmux socket and stable pane ID. A five-second heartbeat and 20-second
+State lives in pane-local `@opencode_state`, `@opencode_sessions`, and
+`@opencode_status`, scoped to the launching tmux socket and stable pane ID. A
+process-local authenticated Unix socket routes picker selections to the owning
+OpenCode TUI; it is removed on normal disposal. A five-second heartbeat and 20-second
 staleness threshold detect crashed or unreachable instances. Normal plugin disposal
 clears owned state. Crashed instances remain marked offline until pane closure or restart.
 Status refresh follows tmux's existing `status-interval` (normally five seconds).
@@ -122,6 +123,7 @@ API-key-protected localhost fzf refresh listener while the picker is open.
 ```sh
 npm test
 node bin/tmux-opencoder.mjs list
+node bin/tmux-opencoder.mjs sessions
 node bin/tmux-opencoder.mjs summary
 ```
 

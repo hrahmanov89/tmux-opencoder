@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { spawn, spawnSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { createServer } from 'node:net';
+import { createConnection, createServer } from 'node:net';
 import { fileURLToPath } from 'node:url';
 import { resolve } from 'node:path';
 
@@ -71,6 +71,91 @@ export function parsePaneRows(text, now = Date.now(), alive = pidAlive) {
     if (state) rows.push({ ...state, session, window, pane, index, raw });
   }
   return rows;
+}
+
+const sessionsPaneFormat = '#{session_id}\t#{window_id}\t#{pane_id}\t#{window_index}.#{pane_index}\t#{@opencode_sessions}';
+
+export function parseSessionRows(text, now = Date.now(), alive = pidAlive) {
+  const rows = [];
+  const seen = new Set();
+  for (const line of text.split('\n')) {
+    const match = /^(\$\d+)\t(@\d+)\t(%\d+)\t(\d+\.\d+)\t(.*)$/.exec(line);
+    if (!match) continue;
+    const [, tmuxSession, window, pane, index, raw] = match;
+    if (!raw) continue;
+    try {
+      const data = JSON.parse(raw);
+      if (!data || data.version !== 1 || !Number.isSafeInteger(data.pid) || data.pid <= 0
+          || !Number.isFinite(data.updated) || typeof data.project !== 'string'
+          || typeof data.control?.path !== 'string' || typeof data.control?.token !== 'string'
+          || !Array.isArray(data.sessions)) continue;
+      for (const s of data.sessions) {
+        if (typeof s.id !== 'string' || typeof s.title !== 'string' || !states.includes(s.state)) continue;
+        const key = `${pane}\0${s.id}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        rows.push({
+          session: tmuxSession,
+          window,
+          pane,
+          index,
+          project: sanitize(data.project),
+          pid: data.pid,
+          sessionID: s.id,
+          title: sanitize(s.title),
+          state: now - data.updated > 20_000 || !alive(data.pid) ? 'offline' : s.state,
+          updated: s.updated,
+          controlPath: data.control.path,
+          controlToken: data.control.token,
+        });
+      }
+    } catch { continue; }
+  }
+  return rows;
+}
+
+export function sessionListText(rows, includeHeader = false) {
+  const sorted = rows.toSorted((a, b) => states.indexOf(a.state) - states.indexOf(b.state));
+  const headings = ['STATE', 'SESSION', 'PROJECT', 'TITLE'];
+  const columns = sorted.map(row => [row.state, sanitize(row.sessionID),
+    sanitize(row.project), sanitize(row.title)]);
+  const widths = headings.map((heading, i) => Math.max(heading.length, ...columns.map(row => row[i].length)));
+  const format = row => row.map((value, i) => i === 3 ? value : value.padEnd(widths[i])).join('  ');
+  const lines = sorted.map((row, i) => [row.session, row.window, row.pane, row.sessionID,
+    row.controlPath, row.controlToken, format(columns[i])].join('\t'));
+  if (includeHeader) lines.unshift(`\t\t\t\t\t\t${format(headings)}`);
+  return lines.join('\n');
+}
+
+export function selectOpenCodeSession(row, timeout = 2000) {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    let response = '';
+    const finish = error => {
+      if (settled) return;
+      settled = true;
+      connection.destroy();
+      error ? reject(error) : resolve();
+    };
+    const connection = createConnection(row.controlPath);
+    connection.setEncoding('utf8');
+    connection.setTimeout(timeout, () => finish(new Error('OpenCode session selection timed out')));
+    connection.once('error', finish);
+    connection.on('data', chunk => {
+      response += chunk;
+      const newline = response.indexOf('\n');
+      if (newline < 0) return;
+      try {
+        const result = JSON.parse(response.slice(0, newline));
+        finish(result.ok ? undefined : new Error(result.error || 'OpenCode session selection failed'));
+      } catch {
+        finish(new Error('Invalid response from OpenCode plugin'));
+      }
+    });
+    connection.once('connect', () => {
+      connection.write(`${JSON.stringify({ token: row.controlToken, sessionID: row.sessionID })}\n`);
+    });
+  });
 }
 
 export function listText(rows, includeHeader = false) {
@@ -181,8 +266,8 @@ function switchPane(tmux, options, pane) {
 
 async function picker(tmux, options) {
   if (!options.client) throw new Error('picker requires --client');
-  const input = listText(readPanes(tmux), true);
-  const reload = commandLine(options, 'list', ['--header']);
+  const input = sessionListText(readSessions(tmux), true);
+  const reload = commandLine(options, 'sessions', ['--header']);
   // Let the OS choose a local port. fzf rejects a race for that port safely.
   const server = createServer();
   await new Promise((yes, no) => { server.once('error', no); server.listen(0, '127.0.0.1', yes); });
@@ -190,7 +275,7 @@ async function picker(tmux, options) {
   await new Promise(yes => server.close(yes));
   const key = randomBytes(32).toString('hex');
   const child = spawn('fzf', [
-    '--delimiter=\t', '--with-nth=4..', '--header-lines=1', '--no-sort', '--track',
+    '--delimiter=\t', '--with-nth=7..', '--header-lines=1', '--no-sort', '--track',
     '--layout=reverse', '--no-preview', '--border=none',
     '--header=OpenCode | Ctrl-R refresh | Esc cancel',
     '--bind', `ctrl-r:reload(${reload})`, `--listen=127.0.0.1:${port}`,
@@ -205,8 +290,10 @@ async function picker(tmux, options) {
   code = await new Promise((yes, no) => { child.once('error', no); child.once('close', yes); });
   if (code === 1 || code === 130) return;
   if (code !== 0) throw new Error(`fzf exited with status ${code}`);
-  const [session, window, pane] = output.trimEnd().split('\t');
-  if (!/^\$\d+$/.test(session) || !/^@\d+$/.test(window)) throw new Error('Invalid picker selection');
+  const [session, window, pane, sessionID, controlPath, controlToken] = output.trimEnd().split('\t');
+  if (!/^\$\d+$/.test(session) || !/^@\d+$/.test(window) || !/^%\d+$/.test(pane)
+      || !sessionID || !controlPath || !controlToken) throw new Error('Invalid picker selection');
+  await selectOpenCodeSession({ sessionID, controlPath, controlToken });
   switchPane(tmux, { ...options, session, window }, pane);
 }
 
@@ -239,6 +326,12 @@ function configure(tmux, options) {
   if (formats.border !== border) tmux(['set-option', '-g', 'pane-border-format', formats.border]);
 }
 
+function readSessions(tmux) {
+  const text = tmux(['list-panes', '-a', '-F', sessionsPaneFormat], false);
+  if (text === null) return [];
+  return parseSessionRows(text);
+}
+
 export async function main(args = process.argv.slice(2), env = process.env) {
   const options = parseArgs(args, env);
   const [command, pane] = options.positional;
@@ -246,6 +339,11 @@ export async function main(args = process.argv.slice(2), env = process.env) {
   switch (command) {
     case 'list': {
       const text = listText(readPanes(tmux), options.header);
+      if (text) process.stdout.write(`${text}\n`);
+      break;
+    }
+    case 'sessions': {
+      const text = sessionListText(readSessions(tmux), options.header);
       if (text) process.stdout.write(`${text}\n`);
       break;
     }
@@ -264,7 +362,7 @@ export async function main(args = process.argv.slice(2), env = process.env) {
         commandLine(options, 'picker', ['--client', options.client])]);
       break;
     case 'configure': configure(tmux, options); break;
-    default: throw new Error('Usage: node tmux-opencoder.mjs [--socket PATH] list|summary|preview %N|switch %N --client CLIENT [--session $N --window @N]|picker --client CLIENT|popup --client CLIENT|configure');
+    default: throw new Error('Usage: node tmux-opencoder.mjs [--socket PATH] list|sessions|summary|preview %N|switch %N --client CLIENT [--session $N --window @N]|picker --client CLIENT|popup --client CLIENT|configure');
   }
 }
 

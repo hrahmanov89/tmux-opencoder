@@ -2,18 +2,25 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import { mkdtempSync, rmSync } from 'node:fs';
+import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   sanitize, shellQuote, socketFromTmux, parseArgs, normalizeState, parsePaneRows,
   listText, summaryText, resolveSelection, configureFormats, borderSuffix, staleStatusCommand,
-  statusColor,
+  statusColor, parseSessionRows, sessionListText, selectOpenCodeSession,
 } from '../bin/tmux-opencoder.mjs';
 
 const helper = fileURLToPath(new URL('../bin/tmux-opencoder.mjs', import.meta.url));
 const state = (changes = {}) => JSON.stringify({ version: 1, pid: process.pid,
   updated: Date.now(), state: 'working', project: 'demo', ...changes });
+const sessionState = (changes = {}) => JSON.stringify({ version: 1, pid: process.pid,
+  updated: Date.now(), project: '/repos/demo', control: { path: '/tmp/control.sock', token: 'secret' },
+  sessions: [
+    { id: 'ses_working', title: 'Working session', state: 'working', updated: Date.now() },
+    { id: 'ses_idle', title: 'Idle session', state: 'idle', updated: Date.now() },
+  ], ...changes });
 
 test('socket parsing preserves commas; explicit socket wins', () => {
   assert.equal(socketFromTmux('/tmp/a,b,123,4'), '/tmp/a,b');
@@ -88,6 +95,45 @@ test('table sorts by urgency without mutating rows; headers align and names are 
     });
     assert.equal(result.status, 0, result.stderr);
     assert.equal(result.stdout.trimEnd().split('\n').length, 6);
+  }
+});
+
+test('session rows include working and idle roots once per linked pane', () => {
+  const snapshot = sessionState();
+  const rows = parseSessionRows(`$0\t@1\t%2\t0.1\t${snapshot}\n$1\t@1\t%2\t2.1\t${snapshot}`, Date.now(), () => true);
+  assert.equal(rows.length, 2);
+  assert.deepEqual(rows.map(row => [row.sessionID, row.state]), [
+    ['ses_working', 'working'], ['ses_idle', 'idle'],
+  ]);
+  const lines = sessionListText(rows, true).split('\n');
+  assert.match(lines[0].split('\t')[6], /^STATE\s+SESSION\s+PROJECT\s+TITLE$/);
+  assert.match(lines[1], /ses_working/);
+  assert.match(lines[2], /ses_idle/);
+});
+
+test('session selection sends exact ID and reports plugin rejection', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'opencoder-control-'));
+  const path = join(dir, 'control.sock');
+  const requests = [];
+  const server = createServer(connection => {
+    connection.setEncoding('utf8');
+    connection.once('data', chunk => {
+      const request = JSON.parse(chunk.trim());
+      requests.push(request);
+      connection.end(`${JSON.stringify(request.token === 'secret' ? { ok: true } : { ok: false, error: 'denied' })}\n`);
+    });
+  });
+  await new Promise((resolve, reject) => { server.once('error', reject); server.listen(path, resolve); });
+  try {
+    await selectOpenCodeSession({ controlPath: path, controlToken: 'secret', sessionID: 'ses_idle' });
+    assert.deepEqual(requests[0], { token: 'secret', sessionID: 'ses_idle' });
+    await assert.rejects(
+      selectOpenCodeSession({ controlPath: path, controlToken: 'wrong', sessionID: 'ses_working' }),
+      /denied/,
+    );
+  } finally {
+    await new Promise(resolve => server.close(resolve));
+    rmSync(dir, { recursive: true, force: true });
   }
 });
 
@@ -300,29 +346,49 @@ test('isolated tmux integration', async t => {
       assert.equal(tmux('display-message', '-p', '-t', pane, '#{window_zoomed_flag}:#{pane_active}'), '1:1');
       tmux('resize-pane', '-Z', '-t', pane);
     });
-    await t.test('live fzf Ctrl-R refresh preserves query and switches stable selection', async t => {
+    await t.test('live fzf refresh selects exact OpenCode session and pane', async t => {
       if (spawnSync('fzf', ['--version']).status !== 0) return t.skip('fzf unavailable');
       tmux('set-option', '-p', '-t', pane, '@opencode_state', state({ project: '/different-project' }));
       tmux('rename-session', '-t', 'three', 'needle-folder');
+      const controlPath = join(dir, 'picker-control.sock');
+      const selected = [];
+      const control = createServer(connection => {
+        connection.setEncoding('utf8');
+        connection.once('data', chunk => {
+          selected.push(JSON.parse(chunk.trim()).sessionID);
+          connection.end(`${JSON.stringify({ ok: true })}\n`);
+        });
+      });
+      await new Promise((resolve, reject) => { control.once('error', reject); control.listen(controlPath, resolve); });
+      const sessions = currentState => sessionState({
+        project: '/different-project', control: { path: controlPath, token: 'picker-secret' },
+        sessions: [
+          { id: 'ses_working', title: 'other session', state: 'working', updated: Date.now() },
+          { id: 'ses_idle', title: 'needle session', state: currentState, updated: Date.now() },
+        ],
+      });
+      tmux('set-option', '-p', '-t', pane, '@opencode_sessions', sessions('working'));
       tmux('resize-window', '-t', 'one', '-x', '180', '-y', '30');
       const command = [process.execPath, helper, '--socket', socket, 'picker', '--client', client].map(shellQuote).join(' ');
       const pickerPane = tmux('new-window', '-d', '-t', 'one', '-P', '-F', '#{pane_id}', command);
       const screen = () => tmux('capture-pane', '-p', '-t', pickerPane);
-      tmux('resize-window', '-t', pickerPane, '-x', '180', '-y', '30');
-      await waitFor(() => screen().includes('needle-folder'));
-      assert.match(screen(), /STATE +SESSION +WINDOW:PANE +PROJECT/);
-      tmux('send-keys', '-t', pickerPane, '-l', 'needle');
-      tmux('set-option', '-p', '-t', pane, '@opencode_state', state({ state: 'retrying', project: '/different-project' }));
-      tmux('send-keys', '-t', pickerPane, 'C-r');
-      await waitFor(() => /retrying/.test(screen()));
-      assert.match(screen(), /> needle/);
-      tmux('set-option', '-p', '-t', pane, '@opencode_state', state({ state: 'idle', project: '/different-project' }));
-      tmux('send-keys', '-t', pickerPane, 'C-r');
-      await waitFor(() => /idle/.test(screen()));
-      assert.match(screen(), /> needle/);
-      tmux('send-keys', '-t', pickerPane, 'Enter');
-      await waitFor(() => !tmux('list-panes', '-a', '-F', '#{pane_id}').split('\n').includes(pickerPane));
-      assert.equal(clientValue(client, '#{pane_id}'), pane);
+      try {
+        tmux('resize-window', '-t', pickerPane, '-x', '180', '-y', '30');
+        await waitFor(() => screen().includes('needle session'));
+        assert.match(screen(), /STATE +SESSION +PROJECT +TITLE/);
+        tmux('send-keys', '-t', pickerPane, '-l', 'needle');
+        tmux('set-option', '-p', '-t', pane, '@opencode_sessions', sessions('idle'));
+        tmux('send-keys', '-t', pickerPane, 'C-r');
+        await waitFor(() => /idle/.test(screen()));
+        assert.match(screen(), /> needle/);
+        tmux('send-keys', '-t', pickerPane, 'Enter');
+        await waitFor(() => selected.length === 1);
+        await waitFor(() => !tmux('list-panes', '-a', '-F', '#{pane_id}').split('\n').includes(pickerPane));
+        assert.deepEqual(selected, ['ses_idle']);
+        assert.equal(clientValue(client, '#{pane_id}'), pane);
+      } finally {
+        await new Promise(resolve => control.close(resolve));
+      }
     });
     await t.test('summary after server shutdown is silent success', () => {
       tmux('kill-server');
