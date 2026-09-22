@@ -289,6 +289,7 @@ test('isolated tmux integration', async t => {
       assert.ok(binding.includes(helper), binding);
       assert.ok(binding.includes(process.execPath));
       assert.ok(binding.includes('#{client_name}'));
+      assert.match(binding, /-s bg=terminal/);
       tmux('set-option', '-g', 'pane-border-status', 'bottom');
       assert.equal(cli('configure').status, 0);
       assert.equal(bindingText(), binding);

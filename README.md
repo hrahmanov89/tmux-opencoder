@@ -1,149 +1,131 @@
 # tmux-opencoder
 
-Current-process OpenCode root sessions, with statuses and a searchable fzf switcher.
-Works with plain `opencode` started inside each pane; no sessionizer changes.
+I vibecoded this to track the OpenCode instances I have open in tmux and to switch
+between them without hunting through windows and panes.
 
-## Interface
-
-Press **prefix + O** to open the popup. Root sessions active, resumed, or previously
-observed by each running OpenCode process are visible, including owned idle sessions.
-The current TUI sidebar session is also recognized. Untouched historical sessions and
-subagent sessions are hidden.
+It adds a searchable fzf popup showing current root OpenCode sessions, their status,
+folder, and title. Select a session and tmux-opencoder switches the existing OpenCode
+TUI to that exact session, then jumps to its pane.
 
 ```text
-STATE    SESSION       FOLDER  TITLE
-working  ses_abc123    api     Add API authentication
-retrying ses_def456    api     Investigate timeout
+STATE    SESSION       FOLDER          TITLE
+working  ses_abc123    api             Add authentication
+idle     ses_def456    istio-adoption  Review migration plan
 ```
 
-- Search session ID, title, status, or final folder name.
-- Enter selects that exact session in its existing OpenCode TUI, then jumps to its pane.
-- Ctrl-R refreshes while preserving the query.
-- Picker has no preview pane and opens without a modal border.
-- Status-right summarizes all instances on that tmux server. Pane-border placement is not changed.
-- Attention states sort first. Existing session names, tmux theme, status commands, and foreign `o` binding are preserved.
+## Features
 
-## Install
+- Search sessions by status, ID, folder, or title.
+- Track `working`, `idle`, and `retrying` session states, plus pane attention/offline status.
+- Show root sessions only. Subagents and unrelated historical sessions stay hidden.
+- Switch the existing OpenCode TUI instead of starting another process.
+- Jump across tmux sessions, windows, and panes.
+- Refresh with `Ctrl-R` without losing the current query.
+- Keep existing tmux themes, status commands, and foreign key bindings intact.
+- Show an instance summary in `status-right`.
 
-Requires:
+Default key: `prefix + O`.
 
-- Node.js 22 or newer.
-- tmux 3.2 or newer with popup support.
-- fzf 0.48 or newer with `--listen` and `--track` support.
-- A Nerd Font or Font Awesome-compatible terminal font for the status icon (``).
+## Requirements
 
-Examples for macOS with Homebrew:
+- Node.js 22+
+- tmux 3.2+
+- fzf 0.48+
+- OpenCode
+- Nerd Font or Font Awesome-compatible font for the status icon
 
-```sh
-brew install node tmux fzf
+## Install With TPM
+
+Add this before the TPM initialization line in `.tmux.conf`:
+
+```tmux
+set -g @plugin 'tmux-plugins/tpm'
+set -g @plugin 'hrahmanov89/tmux-opencoder'
+
+run '~/.tmux/plugins/tpm/tpm'
 ```
 
-Clone this repository, enter the checkout, and run the installer. Pass the path to
-your tmux configuration file:
+Reload tmux, then press `prefix + I` to install plugins.
+
+TPM installs the OpenCode plugin wrapper under `~/.config/opencode/plugins/` and
+configures the picker in the current tmux server. Restart existing OpenCode processes
+once after installation so they load the plugin.
+
+To change the picker key:
+
+```tmux
+set -g @tmux-opencoder-key S
+set -g @plugin 'hrahmanov89/tmux-opencoder'
+```
+
+Then use `prefix + S`.
+
+## Manual Install
 
 ```sh
-git clone <repository-url> ~/src/tmux-opencoder
+git clone https://github.com/hrahmanov89/tmux-opencoder.git ~/src/tmux-opencoder
 cd ~/src/tmux-opencoder
 node bin/install.mjs ~/.tmux.conf
 ```
 
-Use `~/.config/tmux/tmux.conf` instead if that is where your tmux configuration
-lives. The optional second argument changes the prefix key; default is `O`:
+For XDG-style tmux configuration:
+
+```sh
+node bin/install.mjs ~/.config/tmux/tmux.conf
+```
+
+Pass a custom key as the second argument:
 
 ```sh
 node bin/install.mjs ~/.tmux.conf S
 ```
 
-Installer creates a global OpenCode plugin entry, backs up tmux config, and appends
-a marked configuration block. Keep this checkout in place: installation references
-its absolute path and the current Node executable. Reinstall/update the block if
-moving the checkout or removing that Node version.
+The manual installer backs up the tmux config, adds a marked configuration block,
+installs the OpenCode plugin wrapper, and configures the live server when run inside
+tmux. Restart existing OpenCode processes afterward.
 
-Restart existing OpenCode instances after installation. New instances register
-automatically. Existing instances do not appear until restarted.
+## Usage
 
-The installer also configures the live tmux server when run from inside tmux. To
-apply configuration changes later without reinstalling:
+1. Run OpenCode normally inside tmux panes.
+2. Press `prefix + O`.
+3. Search the session list.
+4. Press Enter to switch OpenCode and jump to its pane.
+5. Press `Ctrl-R` to refresh or Esc to close.
 
-```sh
-node bin/tmux-opencoder.mjs configure
-```
-
-Restart OpenCode after updating this checkout so running instances load new plugin
-code.
-
-If `prefix + O` already belongs to another command, it is left unchanged. Use:
+If the key already belongs to another command, tmux-opencoder leaves it alone. Open
+the popup directly with:
 
 ```sh
 node bin/tmux-opencoder.mjs popup --client "$(tmux display-message -p '#{client_name}')"
 ```
 
-Put the installer block after theme/plugin loading. The plugin preserves your existing
-tmux theme, `status-right`, and pane-border settings. It adds only its summary and
-picker binding. Themes that asynchronously replace `status-right` later can hide the
-summary; rerun `configure` after they finish.
+## How It Works
 
-The picker is borderless, 45% high, and has no preview pane. It inherits fzf theme
-settings from `FZF_DEFAULT_OPTS`, while explicitly disabling preview and borders.
+The OpenCode plugin publishes pane-local session snapshots and status heartbeats to
+tmux. An authenticated process-local Unix socket routes an fzf selection back to the
+correct OpenCode process. The helper asks that TUI to select the session and then moves
+the current tmux client to its pane.
 
-## Usage
+The plugin recognizes active, explicitly resumed, previously observed, and currently
+visible root sessions. It ignores subagents and untouched historical sessions. A
+five-second heartbeat and 20-second timeout mark dead processes offline.
 
-1. Start `opencode` normally inside a tmux pane.
-2. Press tmux prefix plus `O` to open the session picker.
-3. Type to search by status, session ID, title, or final folder name.
-4. Press Enter to select that session in OpenCode and switch to its pane.
-5. Press `Ctrl-R` to refresh results without losing the query.
-6. Press Esc to close the picker.
-
-Status colors in the tmux status bar are yellow for `working`, green for `idle`,
-and red for `error`, `needs input`, `retrying`, or `offline`.
-
-## Status Semantics
-
-`working`, `needs input`, `retrying`, `idle`, `error`, `offline` derive from OpenCode
-session, permission, and question events. A busy session is not necessarily thinking;
-idle is not proof of successful completion. Errors remain visible until a new prompt.
-Concurrent sessions and subagents are tracked independently and aggregated per pane.
-Completion of a child cannot mark a busy parent idle.
-
-State lives in pane-local `@opencode_state`, `@opencode_sessions`, and
-`@opencode_status`, scoped to the launching tmux socket and stable pane ID. A
-process-local authenticated Unix socket routes picker selections to the owning
-OpenCode TUI; it is removed on normal disposal. A five-second heartbeat and 20-second
-staleness threshold detect crashed or unreachable instances. Normal plugin disposal
-clears owned state. Crashed instances remain marked offline until pane closure or restart.
-Status refresh follows tmux's existing `status-interval` (normally five seconds).
-
-Only one foreground OpenCode process per pane is supported. Shared `opencode attach`
-servers and remote clients need explicit mapping and are not supported. Multiple
-tmux servers are independent; `--socket PATH` selects one, not a combined dashboard.
-Plugin does nothing outside tmux. No network service except an ephemeral,
-API-key-protected localhost fzf refresh listener while the picker is open.
-
-## Development
-
-```sh
-npm test
-node bin/tmux-opencoder.mjs list
-node bin/tmux-opencoder.mjs sessions
-node bin/tmux-opencoder.mjs summary
-```
-
-Tests use isolated tmux servers; no live user panes are created or switched.
+Only one foreground OpenCode process per pane is supported. Multiple tmux servers are
+independent.
 
 ## Update
 
-Pull changes into the existing checkout, reapply live tmux configuration, and restart
-OpenCode instances:
+With TPM, press `prefix + U`, then restart OpenCode processes. For manual installs:
 
 ```sh
 git pull
 node bin/tmux-opencoder.mjs configure
 ```
 
-## Remove
+## Development
 
-Remove `~/.config/opencode/plugins/tmux-opencoder.js` and the marked block from your
-tmux config, then restart OpenCode. Existing live tmux formats/binding remain until
-restored or the tmux server restarts; use the installer backup to recover original
-settings without overwriting any later edits.
+```sh
+npm test
+node bin/tmux-opencoder.mjs sessions
+node bin/tmux-opencoder.mjs summary
+```

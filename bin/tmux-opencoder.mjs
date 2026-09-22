@@ -9,6 +9,7 @@ const helperPath = fileURLToPath(import.meta.url);
 const states = ['needs input', 'error', 'working', 'retrying', 'idle', 'offline'];
 const paneFormat = '#{session_id}\t#{window_id}\t#{pane_id}\t#{window_index}.#{pane_index}\t#{@opencode_state}';
 const summaryIcon = '\uf108';
+const popupStyle = 'bg=terminal';
 export const borderSuffix = '#{?@opencode_status, [#{@opencode_status}],}';
 
 export function statusColor(state) {
@@ -321,7 +322,7 @@ function configure(tmux, options) {
   // A note marks ownership; mentioning our path in a foreign command is not enough.
   if (!binding || binding === `${bindKey}\t${owner}`) {
     tmux(['bind-key', '-T', 'prefix', '-N', owner, bindKey, 'display-popup',
-      '-B', '-w', '90%', '-h', '45%', '-E', 'sh', '-c', clientScript]);
+      '-B', '-s', popupStyle, '-w', '90%', '-h', '45%', '-E', 'sh', '-c', clientScript]);
   }
   const status = tmux(['show-options', '-g', '-v', 'status-right']);
   const border = tmux(['show-options', '-g', '-v', 'pane-border-format']);
@@ -362,7 +363,7 @@ export async function main(args = process.argv.slice(2), env = process.env) {
     case 'picker': await picker(tmux, options); break;
     case 'popup':
       if (!options.client) throw new Error('popup requires --client');
-      tmux(['display-popup', '-B', '-c', options.client, '-w', '90%', '-h', '45%', '-E',
+      tmux(['display-popup', '-B', '-s', popupStyle, '-c', options.client, '-w', '90%', '-h', '45%', '-E',
         commandLine(options, 'picker', ['--client', options.client])]);
       break;
     case 'configure': configure(tmux, options); break;
