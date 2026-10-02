@@ -19,6 +19,12 @@ test('TPM mode installs OpenCode wrapper without editing tmux config', () => {
     const wrapper = readFileSync(join(dir, 'opencode/plugins/tmux-opencoder.js'), 'utf8');
     assert.match(wrapper, /Managed by tmux-opencoder installer/);
     assert.match(wrapper, /plugin\/tmux-opencoder\.mjs/);
+    assert.match(wrapper, /export \{ default \}/);
+    const tui = readFileSync(join(dir, 'opencode/plugins/tmux-opencoder/tui.ts'), 'utf8');
+    assert.match(tui, /plugin\/tui\.mjs/);
+    assert.match(tui, /export \{ default \}/);
+    const index = readFileSync(join(dir, 'opencode/plugins/tmux-opencoder/index.ts'), 'utf8');
+    assert.match(index, /id: 'tmux-opencoder.cli-loader'/);
     assert.match(result.stdout, /prefix \+ S/);
   } finally {
     rmSync(dir, { recursive: true, force: true });

@@ -58,7 +58,8 @@ export async function discoverSessions(client, directory, observed, screen = '')
   });
 }
 
-export default async function tmuxOpencoder({ client, directory }) {
+export async function tmuxOpencoder({ client, directory, discover = discoverSessions,
+  select = selectTuiSession }) {
   const pane = process.env.TMUX_PANE;
   const socket = /^(.*),[^,]+,[^,]+$/.exec(process.env.TMUX || '')?.[1];
   if (!socket || !/^%\d+$/.test(pane || '')) return {};
@@ -102,7 +103,7 @@ export default async function tmuxOpencoder({ client, directory }) {
           if (!sessions.some(session => session.id === request.sessionID)) {
             throw new Error('Session is not available in this OpenCode process');
           }
-          await selectTuiSession(client, directory, request.sessionID);
+          await select(client, directory, request.sessionID);
           connection.end(`${JSON.stringify({ ok: true })}\n`);
         } catch (error) {
           connection.end(`${JSON.stringify({ ok: false, error: error.message || String(error) })}\n`);
@@ -121,7 +122,8 @@ export default async function tmuxOpencoder({ client, directory }) {
       if (disposed) return;
       try {
         const screen = await tmux('capture-pane', '-p', '-t', pane);
-        sessions = await discoverSessions(client, directory, observed, screen.stdout);
+        sessions = await discover(client, directory, observed, screen.stdout, tracker);
+        void publish();
         const snapshot = JSON.stringify({ version: 1, owner, pid: process.pid,
           updated: Date.now(), project: directory, control: { path: controlPath, token }, sessions });
         await tmux('set-option', '-p', '-t', pane, '@opencode_sessions', snapshot);
@@ -190,3 +192,11 @@ export default async function tmuxOpencoder({ client, directory }) {
     },
   };
 }
+
+// V2 owns pane-local behavior in the CLI, not in its shared background server.
+// V1 1.18.29+ calls server(); older V1 releases can use the named function.
+export default {
+  id: 'tmux-opencoder',
+  setup() {},
+  server: tmuxOpencoder,
+};

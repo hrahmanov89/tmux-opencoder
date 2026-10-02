@@ -31,7 +31,7 @@ Default key: `prefix + O`.
 - Node.js 22+
 - tmux 3.2+
 - fzf 0.48+
-- OpenCode
+- OpenCode V2 (full-screen TUI), or V1 1.18.29+
 - Nerd Font or Font Awesome-compatible font for the status icon
 
 ## Install With TPM
@@ -50,6 +50,11 @@ Reload tmux, then press `prefix + I` to install plugins.
 TPM installs the OpenCode plugin wrapper under `~/.config/opencode/plugins/` and
 configures the picker in the current tmux server. Restart existing OpenCode processes
 once after installation so they load the plugin.
+
+V2 also loads a CLI plugin from `plugins/tmux-opencoder/`. Pane tracking and
+session selection run in each TUI, not in the shared background service. No
+changes to `cli.json` are required. After upgrading from V1, rerun the installer
+(or reload the TPM plugin) and restart your TUIs.
 
 To change the picker key:
 
@@ -109,6 +114,12 @@ the current tmux client to its pane.
 The plugin recognizes active, explicitly resumed, previously observed, and currently
 visible root sessions. It ignores subagents and untouched historical sessions. A
 five-second heartbeat and 20-second timeout mark dead processes offline.
+
+On V2, the picker shows open root-session tabs and previously viewed sessions in
+that TUI, using its session cache and execution events. Selection focuses a tab,
+or navigates directly when tabs are disabled. Sessions in other TUIs sharing the
+same server do not automatically appear in this pane. V1 retains its legacy
+session discovery and selection APIs. V2 Mini and headless clients are not supported.
 
 Only one foreground OpenCode process per pane is supported. Multiple tmux servers are
 independent.

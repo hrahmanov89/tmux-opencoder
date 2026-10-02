@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createTracker } from '../lib/status.mjs';
-import plugin, { discoverSessions, resumedSessionID, selectTuiSession, visibleSessionID } from '../plugin/tmux-opencoder.mjs';
+import plugin, { tmuxOpencoder, discoverSessions, resumedSessionID, selectTuiSession, visibleSessionID } from '../plugin/tmux-opencoder.mjs';
 
 function send(t, type, sessionID, props = {}) {
   t.event({ type, properties: { sessionID, ...props } });
@@ -44,7 +44,12 @@ test('retry, completion, deletion and unrelated events', () => {
 test('plugin is inert outside tmux', async () => {
   const old = process.env.TMUX;
   delete process.env.TMUX;
-  try { assert.deepEqual(await plugin({ directory: '/tmp' }), {}); }
+  try {
+    assert.equal(plugin.id, 'tmux-opencoder');
+    assert.equal(typeof plugin.setup, 'function');
+    assert.equal(plugin.server, tmuxOpencoder);
+    assert.deepEqual(await plugin.server({ directory: '/tmp' }), {});
+  }
   finally { if (old !== undefined) process.env.TMUX = old; }
 });
 test('TUI selection uses exact session through legacy SDK transport', async () => {

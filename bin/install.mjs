@@ -16,11 +16,22 @@ const original = tmuxConfig ? await readFile(tmuxConfig, 'utf8') : '';
 const pluginDir = join(configHome, 'opencode', 'plugins');
 const pluginPath = join(pluginDir, 'tmux-opencoder.js');
 const marker = '// Managed by tmux-opencoder installer';
-const wrapper = `${marker}\nimport _plugin from ${JSON.stringify(pathToFileURL(join(root, 'plugin/tmux-opencoder.mjs')).href)};\nexport const tmuxOpencoder = _plugin;\n`;
+const wrapper = `${marker}\nexport { default } from ${JSON.stringify(pathToFileURL(join(root, 'plugin/tmux-opencoder.mjs')).href)};\n`;
+const tuiDir = join(pluginDir, 'tmux-opencoder');
+const tuiPath = join(tuiDir, 'tui.ts');
+const tuiIndex = join(tuiDir, 'index.ts');
+const tuiDefinition = `${marker}\nexport default { id: 'tmux-opencoder.cli-loader', setup() {}, async server() { return {}; } };\n`;
+const tuiWrapper = `${marker}\nexport { default } from ${JSON.stringify(pathToFileURL(join(root, 'plugin/tui.mjs')).href)};\n`;
 let previous;
 try { previous = await readFile(pluginPath, 'utf8'); }
 catch (error) { if (error.code !== 'ENOENT') throw error; }
 if (previous && !previous.startsWith(marker)) throw new Error(`Refusing to replace ${pluginPath}`);
+for (const path of [tuiPath, tuiIndex]) {
+  try {
+    const contents = await readFile(path, 'utf8');
+    if (!contents.startsWith(marker)) throw new Error(`Refusing to replace ${path}`);
+  } catch (error) { if (error.code !== 'ENOENT') throw error; }
+}
 for (const tool of ['tmux', 'fzf']) {
   const check = spawnSync(tool, [tool === 'tmux' ? '-V' : '--version']);
   if (check.status !== 0) throw new Error(`${tool} must be installed and on PATH`);
@@ -36,6 +47,9 @@ if (tmuxConfig && original.includes(begin) && !original.includes(block)) {
 }
 await mkdir(pluginDir, { recursive: true });
 await writeFile(pluginPath, wrapper);
+await mkdir(tuiDir, { recursive: true });
+await writeFile(tuiIndex, tuiDefinition);
+await writeFile(tuiPath, tuiWrapper);
 if (tmuxConfig && !original.includes(block)) {
   const backup = `${tmuxConfig}.opencoder-backup-${Date.now()}`;
   await copyFile(tmuxConfig, backup);
